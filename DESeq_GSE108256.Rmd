@@ -1,0 +1,786 @@
+---
+title: "GSE108256 DEG Analysis"
+output: 
+  html_document:
+    toc: true # table of content
+    toc_float:
+      collapsed: true
+    toc_depth: 4  # upto four depths of headings 
+    theme: united  
+    #highlight: tango  # specifies the syntax highlighting style
+    fig_width: 11
+    fig_height: 7
+---
+  
+```{r load_lib_setup, include=FALSE, cache=F}
+knitr::opts_chunk$set(echo = TRUE, verbose = TRUE,error=FALSE)
+#options(java.parameters = "- Xmx1024m")
+library(ggplot2)
+library(dplyr)
+#library(DT)
+library(reshape2)
+library(ggrepel)
+library(DESeq2)
+#library(gtools)
+library(pheatmap)
+library(grid)
+library(png)
+library(gridExtra)
+library(cowplot)
+library(gridGraphics)
+library(knitr)
+library(htmltools)
+```
+
+```{r global_paths, include=FALSE,echo=FALSE,message=FALSE,warning=FALSE}
+# for MA_HM_plotv1
+source("../../misc_v2.R")
+
+#for DEG plots
+source("../../DEG_plotFunctions.R")
+
+studyName = 'GSE108256'
+jobDir = paste('/mnt/hdd/rami/projects/sca1_portal/rna_seq/code/',studyName,'_res/', sep='')
+disease = 'NA'
+#minimum mean of rows for gene count filtering
+rowMeanCut = 10
+
+#read the gene symbols
+fileName = '/mnt/hdd/rami/NGS_data/GRCm38p6_genes_tss_v2.txt'
+geneSymDf = read.table(fileName,  header=T, sep='\t',stringsAsFactors = F, check.names=F)
+colnames(geneSymDf)[grep("gene_name",colnames(geneSymDf))] <- "gene_symbol"
+geneSymDf <- geneSymDf[,c(1,5)]
+dim(geneSymDf)
+
+#path to the count command; used in the section make_counts_file
+countCmd = "../../GetCounts_v2.py"
+```
+
+
+```{r function_MA_v1, include=FALSE,echo=FALSE,message=FALSE,warning=FALSE}
+MA_HM_plotv1 <- function(i,mer3,DEG_name,coln,condition,contnum){
+  FDR <- c(0.01,0.05,0.1)
+  #mer3 = filtGeneDf
+  #DEG_name = 'DEG_1'
+  #condition = sample.info.sub$conditions
+  #source("../../misc_v2.R")
+  # Obtain sample name
+  #names <- c(colnames(mer3))[41:ncol(mer3)]
+  names = as.character(  sample.info.sub$sampleName )
+  
+  # Extract Significant genes
+  sig <- subset(mer3, (mer3[coln$padj]< FDR[i] & !is.na(mer3[,coln$padj])))
+  sig1 <- sig[,c(1,unlist(coln))]
+  sig2 <- sig[,c("Gene_ID",names)]
+  sig3 <- merge(sig1,sig2, by="Gene_ID")
+  warning(sig3$gene)
+  plot.dat <- sig3[, names]
+  rownames(plot.dat) <- sig3$gene
+  
+  # Create png file for MA plot
+  #options(bitmapType='cairo')
+  #png(paste("MA", i, "_", contnum, ".png", sep = ""),height=480*0.7,width=480*1.9,units="px")
+  print(MA.Gen3a(mer3[,coln$baseMean],mer3[,coln$l2fc], pvals=mer3[,coln$padj], th=FDR[i], psize=2, title=DEG_name))
+  #dev.off()
+  
+  plot.all <- plot.dat
+  
+  # Find top 25 upregulated and 25 downregulated
+  if (nrow(sig3) > 0){
+  n=25
+  resOrdered <- sig3[order(sig3[grep("Change$", colnames(sig3))]),]
+  if (dim(resOrdered)[1]<n*2){
+    n=round(dim(resOrdered)[1]/2.01)
+  }
+  topResults <- rbind(resOrdered[1:n,],resOrdered[(nrow(resOrdered)-n+1):nrow(resOrdered),])
+  
+  plot.dat <- topResults[, grep("^GSM", colnames(topResults))]
+  rownames(plot.dat) <- topResults$Gene_ID
+  
+  # annC = annotation_col: specifies the annotations shown on the columns 
+  # want to put two factors which are my treatment type and treatment time 
+  annC <- data.frame(condition=factor(condition))
+  
+  # rownames(annC) == colnames(plot.dat2) 
+  rownames(annC) = colnames(plot.dat)
+    
+    # set color scale
+    ccnt = 20
+    cols <- colorRampPalette(c("navy", "white", "firebrick3"))(ccnt)
+    colbk <- seq(-2, 2, length.out=ccnt+1)
+    
+    pheatmap(as.matrix(log10(1+plot.dat)), scale="row", color = cols, annotation_col = annC, show_rownames=T, clustering_distance_cols="euclidean", clustering_distance_rows="euclidean", clustering_method = "complete",fontsize_row=8, fontsize_col=15)
+  }
+  #cat("  \n")
+  #cat("  \n#### FDR < ",FDR[i], " \n")
+  #cat("  \n#### Contrast number ", contnum, " \n")
+  #cat("  \n")
+  #,filename=paste("Heatmap",i, "_", contnum, ".png",sep="")
+  # if (i==1){
+  #   pheatmap(as.matrix(log10(1+plot.all)), scale="row", color = cols, annotation_col = annC, show_rownames=T, clustering_distance_cols="euclidean", clustering_distance_rows="euclidean", clustering_method = "complete",fontsize_row=rel(2), height=0.03*dim(plot.all)[1]+2, fontsize_col=15,filename=paste("Heatmap",FDR[i],DEG_name,".png",sep="_"))
+  # }
+}
+```
+
+``` {r function_display ,echo=FALSE, results='asis'}
+# Combine and Display MA plot and Heatmap. Delete file after to reduce clutter
+display_image<- function(i, contnum){
+  FDR <- c(0.01,0.05,0.1)
+  cat("  \n")
+  cat("  \n#### FDR < ",FDR[i], " \n")
+  cat("  \n#### Contrast number ", contnum, " \n")
+  cat("  \n")
+  imageName_1 = paste("MA",i, "_", contnum, ".png",sep="")
+  #imageName_2 = paste("Heatmap",i, "_", contnum, ".png",sep="")
+  img1 <- rasterGrob(as.raster(readPNG( imageName_1 )), interpolate = F)
+  grid.arrange(arrangeGrob(img1, ncol = 1))
+  # if(file.exists(imageName_1) == T & file.exists(imageName_2) == T)
+  # {
+  #   img1 <- rasterGrob(as.raster(readPNG( imageName_1 )), interpolate = F)
+  #   img2 <- rasterGrob(as.raster(readPNG( imageName_2  )), interpolate = F)
+  #   grid.arrange(arrangeGrob(img1, img2, ncol = 2))
+  # }else
+  # {
+  #  warning('no signifigant genes') 
+  # }
+  
+  #invisible(file.remove(paste("MA",i,".png",sep="")))
+  #invisible(file.remove(paste("Heatmap",i,".png",sep="")))
+}
+```
+
+
+```{r read_meta, echo=FALSE, include=FALSE,echo=FALSE,message=FALSE,warning=FALSE}
+fileName = paste('../',studyName, '_process_meta_file.txt', sep='')
+metaFile = read.table(fileName,  header=T, sep='\t',stringsAsFactors = F, check.names=F)
+dim(metaFile)
+#double check the meta file with the original sra run file manually
+#View(metaFile) 
+```
+
+```{r make_counts_file, echo=FALSE, include=FALSE,echo=FALSE,message=FALSE,warning=FALSE}
+#call the get counts script from the main directory
+cmd = paste('python ' , countCmd,' -jobDir ', jobDir, sep='')
+cmd
+system(cmd)
+```
+
+# Overview
+1.  Quality Control using FastQC
+6.  Align reads using STAR
+7.  RSeQC after STAR
+8.  Differential gene analysis using DESeq2
+
+
+# MultiQC
+```{r MultiQC, include=TRUE, echo=FALSE, results='asis', warning=FALSE,message=FALSE}
+cmd = paste('cp ', '../multiQC/multiqc_report.html ./', sep='')
+system(cmd)
+fileName = 'multiqc_report.html'
+htmltools::tags$iframe(src = fileName,height=1000,width="100%",frameBorder="1")
+```
+
+
+```{r make_sample_info_file, echo=FALSE, include=FALSE,echo=FALSE,message=FALSE,warning=FALSE}
+#get the counts files and put into data frame and in same orders as the meta file
+dirName = '..'
+dirList = list.files(dirName)
+countFileVec = c()
+sampleVec =c()
+for (dir in dirList)
+{
+  if (grepl('SRR', dir))
+  {
+    cat('dir:', dir , '\n')
+    countFile = paste('../', dir,'/STAR/',dir,'_STAR_ReadCounts_v2.txt', sep='')
+    countFileVec = append(countFileVec, countFile)
+    sampleVec = append(sampleVec, dir)
+  }
+}
+countFileDf = data.frame('sample' = sampleVec, 'countFile' = countFileVec, stringsAsFactors = F)
+dim(countFileDf)
+head(countFileDf)
+#check if the meta file and count same dimension
+check_1 = all(nrow(countFileDf) == nrow(metaFile))
+check_1
+if(check_1 == F)
+{
+  cat('meta file and counts file not same dimension\n')
+  countFileDf = NULL
+  metaFile = NULL
+}
+countFileDf = countFileDf[match(metaFile$Run, countFileDf$sample),]
+#check
+check_1 = all(countFileDf$sample %in%  metaFile$Run )
+check_1
+check_2 = all(countFileDf$sample ==  metaFile$Run )
+check_2
+if(check_1 == F | check_2 == F)
+{
+  cat('not in same order\n')
+  countFileDf = NULL
+  metaFile = NULL
+}
+sample.info =  data.frame(sampleName = metaFile$Sample_Name, 'fileName' = countFileDf$countFile,  metaFile )
+#head(sample.info)
+#replace any whitespace
+sample.info$genotype = gsub(" ", "", sample.info$genotype)
+sample.info$genotype = as.factor(sample.info$genotype)
+#View(sample.info)
+
+sample.info <- sample.info[order(sample.info$Run),]
+
+fileName = paste(studyName, "_DESeqSampleInfo.txt", sep="")
+fileName
+write.table(sample.info, fileName, sep="\t", quote=F, row.names=F)
+```
+
+```{r combine_count_files ,include=FALSE, echo=FALSE, results='asis', warning=FALSE}
+file.ls = list.files(path=dirName, full.names=T, recursive = T)  #<-edit
+file.ls = file.ls[grep("*_ReadCounts_v2*",file.ls)]
+
+#remove files that are not a part of this comparison if necessary. This depends on the study
+#file.ls[c(-1:-4)]
+Counts = list()
+
+# Read all files into Count variable
+for(i in file.ls) 
+{
+  #i = "../SRR6004713/STAR/SRR6004713_STAR_ReadCounts_v2.txt"
+  data = read.delim(i, header=F, stringsAsFactors=F)
+  new_name = gsub("../..*../", "", i)
+  ### change here if you intend to use anything besides STAR output aggregate  - stranded and unstranded are thrown out here
+  colnames(data) = c("gene","Counts")
+  #data <- data[ -c(3,4) ]
+  Counts[[new_name]] = data
+}
+length(Counts)
+
+
+# merge all the tables together by genes; mer has all the raw counts 
+mer = merge(data.frame(Counts[1]), data.frame(Counts[2]), by.x=1, by.y=1, all=T)
+for(i in 3:length(Counts)) 
+{
+  # merge all the tables together by GENENAME
+  mer = merge(mer, data.frame(Counts[i]), by.x=1, by.y=1, all=T)
+}
+
+# Change the column names to be the sample names
+rownames(mer) = mer[,1]
+mer = mer[, -c(1)]
+colnames(mer) = gsub( "_.*$","",colnames(mer) )
+colnames(mer) = gsub( "X.m","",colnames(mer) )
+check_1 = all(colnames(mer) %in% sample.info$Run)
+check_1
+check_2 = all(colnames(mer) == sample.info$Run)
+check_2
+if(check_1 == F | check_2 == F)
+{
+  cat('sample info and counts columns not in same order\n')
+  mer = NULL
+  sample.info = NULL
+}
+colnames(mer) = sample.info$sampleName
+
+# Output all count
+fileName = paste(studyName, '_STARcounts_all.txt', sep='')
+fileName
+#write.table(mer, "MeCP2_GSE60219_STARcounts_all_FC.txt", row.names=F, sep="\t", quote=F)  #<-edit
+tmpDf = data.frame('Gene' = rownames(mer), mer, check.names = F, stringsAsFactors = F)
+write.table(mer, fileName, row.names=F, sep="\t", quote=F)
+
+#set Counts df
+Counts = mer
+```
+
+```{r make_contrast_table,include=FALSE, echo=FALSE, results='asis', warning=FALSE}
+#create contrast table
+###Some steps here are manual which depends on study
+#use the following nomenclature
+#?category_experimental condition_sex_age_brain region_cell type_ transgene? where ?category? denotes the human disease being modeled or ?other? (e.g. AD, HD, SCA, ALS), ?experimental condition? denotes the specific mouse genotype or treatment condition, ?sex? (M or F), ?age? (months) ,?brain region? (e.g. hippocampus), ?cell type? (e.g. neuron, microglia), ?transgene?
+#decide on what is num (like transgenic/treatment) and deno (e.g WT)
+cont.num = c('En1-Cre;Cicflox/flox', 'Pcp2-ATXN1[82Q]V591A;S602D', 'Pcp2-ATXN1[82Q]')
+cont.denom = c('Cicflox/+', 'FVB', 'FVB')
+
+cont.tbl = data.frame('cont.num' = cont.num, 'cont.denom' = cont.denom)
+#loop thru the numerators and make the spefic combinations based on age sex etc
+numVec = c()
+denomVec = c()
+ageVec = c()
+regionVec = c()
+cellVec = c()
+strainVec = c()
+sexVec = c()
+lineVec = c()
+#for (genoType in unique(sample.info$genotype) )
+for (genoType in cont.tbl$cont.num )
+{
+  #genoType = 'Trp53(-/-)'
+  if( !(genoType %in% cont.num) )
+  {
+    next
+  }
+  cat('genotype:', genoType, '\n')
+  num = genoType
+  numVec = append(numVec, num)
+  denom = cont.tbl[cont.tbl$cont.num == num,]$cont.denom
+  denomvec = append(denomVec, denom)
+  #get df for this numerator only
+  tmpDf = sample.info[sample.info$genotype == num,]
+  #check age
+  age = unique(tmpDf$age)
+  #check sex
+  sex = unique(tmpDf$sex)
+  #check strain
+  strain = unique(tmpDf$strain)
+  #check brain region
+  region = unique(tmpDf$tissue)
+  #check cell line
+  cell = unique(tmpDf$cell_line)
+  #get the combinations of comaprisons starting with strain
+  for(strainVal in strain)
+  {
+    cat('\tstrainVal:', strainVal, '\n')
+    for(cellVal in cell)
+    {
+      cat('\tcellVal:', cellVal, '\n')
+      for(regionVal in region)
+      {
+        for (ageVal in age)
+        {
+          for(sexVal in sex)
+          {
+            cat('\tnum:', num, '\n')
+            line = paste(num, sexVal, ageVal, regionVal, cellVal, strainVal, sep='_')
+            cat('\tline:', line, '\n')
+            lineVec = append(lineVec, line)
+            ageVec = append(ageVec, ageVal)
+            regionVec = append(regionVec, regionVal)
+            cellVec = append(cellVec, cellVal)
+            sexVec = append(sexVec, sexVal)
+            strainVec = append(strainVec, strain)
+            
+          }
+        }
+      }
+    }
+  }#end strain loop
+}
+#make the cont names from the cont.names
+cont.tbl$cont.names =lineVec
+cont.tbl$age = ageVec
+cont.tbl$strain = strainVec
+cont.tbl$tissue = regionVec
+cont.tbl$cell_line = cellVec
+cont.tbl$sex = sexVec
+cont.tbl$contrastId = c(1:nrow(cont.tbl)) 
+
+#View(cont.tbl)
+
+contFileName = paste(studyName, '_DESeqContrastTbl.txt', sep='')
+contFileName
+write.table(cont.tbl, file=contFileName, sep="\t", quote=FALSE, row.names=FALSE)
+```
+
+
+```{r call_DESeq2 ,include=T, echo=FALSE, results='asis', warning=FALSE, message=FALSE, eval = T}
+# Make a directory to store DESeq
+ddir = paste('DESeq2', sep="")
+#system(paste("mkdir ", ddir, sep=""))
+dir.create(ddir)
+
+# Prepare Counts coldata
+#make sure counts and sample.info in same order
+check_1 = all(colnames(Counts) == sample.info$sampleName)
+check_1
+if(check_1 == FALSE )
+{
+  Counts = NULL
+  sample.info = NULL
+}
+colData.counts  = data.frame(conditions=factor(sample.info$genotype))
+rownames(colData.counts) = colnames(Counts)
+
+
+#loop thru the contrast table created in step/chunk above and call DESeq
+for(i in 1:nrow(cont.tbl))
+{
+  #i = 1
+  inContNum = as.character(cont.tbl[i,'cont.num'])
+  inContNum
+  inContDenom = as.character(cont.tbl[i,'cont.denom'])
+  inContDenom
+  inStrain = cont.tbl[i,"strain"]
+  inAge = cont.tbl[i,"age"]
+  inSex = cont.tbl[i,"sex"]
+  inCell = cont.tbl[i,"cell_line"]
+  inTissue  = cont.tbl[i,"tissue"]
+  #filter on genotype
+  sample.info.sub = dplyr::filter(sample.info, sample.info$genotype %in% c(inContNum,inContDenom))
+  dim(sample.info.sub)
+  #filter on other criteria
+  #add contrasts as appropriate & sample.info.sub$age %in% inAge & sample.info.sub$sex %in% inSex & sample.info.sub$cell_line %in% inCell
+  sample.info.sub = sample.info.sub[sample.info.sub$tissue %in% inTissue,]
+  dim(sample.info.sub)
+  #to use same format 
+  sample.info.sub$conditions = sample.info.sub$genotype
+  #View(sample.info.sub)
+  
+  contNames = cont.tbl[i, "cont.names"]
+  fileName = paste('subSampleTable_contrast_', i,'.txt', sep='')
+  #subSampleTableFileName = 'test.txt'
+  write.table(sample.info.sub, fileName ,sep='\t', row.names=F, quote=F)
+  
+  #filter the raw count table to the samples in sample.ino.sub
+  countTable.sub = Counts[, colnames(Counts) %in% sample.info.sub$sampleName]
+  dim(countTable.sub)
+  
+  check_1 = all(colnames(countTable.sub) %in% sample.info.sub$sampleName)
+  check_1
+  check_2 = all(colnames(countTable.sub) == sample.info.sub$sampleName)
+  check_2
+  if(check_1 == F | check_2 == F)
+  {
+    cat('sub count table and sub info table not in same order\n')
+    countTable.sub = NULL
+    sample.info.sub = NULL
+  }
+  colData.counts  <- data.frame(conditions=factor(sample.info.sub$conditions))
+  rownames(colData.counts) <- colnames(countTable.sub)
+  #preapre for DESeq
+  ddscounts.sub <- DESeqDataSetFromMatrix(countData = countTable.sub, colData = colData.counts, design = ~ conditions)
+  # Run DESeq
+  dds.sub = DESeq(ddscounts.sub)
+  #get the normalized counts
+  normCounts.sub = counts(dds.sub, normalized=T)
+  dim(normCounts.sub)
+  
+  res.sub <- results(dds.sub, contrast=c("conditions", inContNum, inContDenom  ))
+  res.sub$grp.mean <- sapply(levels(dds.sub$conditions), function(lvl) X =  rowMeans(counts(dds.sub,normalized=T)[,dds.sub$conditions == lvl] ) )
+  final.data <- data.frame(res.sub, normCounts.sub)
+  dim(final.data)
+  #get the gene symbols
+  tmpDf = data.frame('Gene_ID' = rownames(final.data), final.data, stringsAsFactors = F)
+  #head(tmpDf)
+  #head(geneSymDf)
+  #dim(tmpDf)
+  #Use the line below if you are stripping the . from the gene symbol in the counts file
+  #geneSymDf$gene <- sapply(strsplit(geneSymDf$gene,"\\."), function(x) x[1])
+  tmpDf = merge(tmpDf, geneSymDf, by.x='Gene_ID', by.y='gene', all=T)
+  #dim(tmpDf)
+  tmpDf_2 = data.frame('Gene_ID' = tmpDf$Gene_ID,'Gene_symbol' = tmpDf$gene_symbol, tmpDf[,2:(ncol(tmpDf)-1)])
+  #strip the . from the gene ID before writing 
+  tmpDf_2$Gene_ID = gsub("\\..*","",tmpDf_2$Gene_ID)
+  #write
+  fileName = paste(ddir,  "/", studyName, "_contrast_", i,"_DESeq_all_genes.txt", sep='')
+  fileName
+  write.table(tmpDf_2, file=fileName, sep='\t', row.names = F, quote = F)
+  
+  
+  ###########
+  #filter raw gene counts based on threshold; rowMeanCut = 10 set at the top
+  ###########
+  countTable.filt = countTable.sub[rowSums(countTable.sub >= rowMeanCut) >= (0.5 * ncol(countTable.sub)), ]
+  dim(countTable.filt)
+  
+  #call DEseq on the filtered same as above; probably better to make this a function/method above
+  check_1 = all(colnames(countTable.filt) %in% sample.info.sub$sampleName)
+  check_1
+  check_2 = all(colnames(countTable.filt) == sample.info.sub$sampleName)
+  check_2
+  if(check_1 == F | check_2 == F)
+  {
+    cat('filt sub count table and sub info table not in same order\n')
+    countTable.sub = NULL
+    sample.info.sub = NULL
+  }
+  colData.counts  <- data.frame(conditions=factor(sample.info.sub$conditions))
+  rownames(colData.counts) <- colnames(countTable.filt)
+  #preapre for DESeq
+  ddscounts.filt <- DESeqDataSetFromMatrix(countData = countTable.filt, colData = colData.counts, design = ~ conditions)
+  # Run DESeq
+  dds.filt = DESeq(ddscounts.filt)
+  #get the normalized counts
+  normCounts.filt = counts(dds.filt, normalized=T)
+  dim(normCounts.filt)
+  
+  res.filt <- results(dds.filt, contrast=c("conditions", inContNum, inContDenom  ))
+  res.filt$grp.mean <- sapply(levels(dds.filt$conditions), function(lvl) rowMeans(counts(dds.filt,normalized=T)[,dds.filt$conditions == lvl] ) )
+  final.data <- data.frame(res.filt, normCounts.filt)
+  #get the gene symbols
+  tmpDf = data.frame('Gene_ID' = rownames(final.data), final.data, stringsAsFactors = F)
+  #dim(tmpDf)
+  #head(tmpDf)
+  tmpDf = merge(tmpDf, geneSymDf, by.x='Gene_ID', by.y='gene', all.x=T)
+  tmpDf_2 = data.frame('Gene_ID' = tmpDf$Gene_ID,'Gene_symbol' = tmpDf$gene_symbol, tmpDf[,2:(ncol(tmpDf)-1)])
+  filtGeneDf = tmpDf_2
+  tmpDf_2$Gene_ID = gsub("\\..*","",tmpDf_2$Gene_ID)
+  #dim(tmpDf_2)
+  #write
+  fileName2 = paste(ddir,  "/", studyName, "_contrast_", i,"_DESeq_filt_genes.txt", sep='')
+  fileName2
+  write.table(tmpDf_2, file=fileName2, sep='\t', row.names = F, quote = F)
+  
+  #merge filtered and unfiltered
+  filtered_deseq <- read.table(file = fileName2, sep ="",header = T, quote = "", stringsAsFactors = F)
+  all_deseq <- read.table(file = fileName, sep ="",header = T, quote = "", stringsAsFactors = F)
+  common <- intersect(all_deseq$Gene_ID, filtered_deseq$Gene_ID)  
+
+  filtered_out <- all_deseq[ ! all_deseq$Gene_ID %in% common, ]
+  filtered_out$DESeq_status <- "filtered out"
+  filtered_deseq$DESeq_status <- "Used for DESeq"
+
+  filtered_out$padj <- NA
+  filtered_out$pvalue <- NA
+  final_deseq <- rbind(filtered_out, filtered_deseq) 
+  fileName3 = paste(ddir,  "/", studyName, "_contrast_", i,"_DESeq_final.txt", sep='')
+  fileName3
+  write.table(final_deseq, file=fileName3, sep='\t', row.names = F, quote = F)
+  
+  
+  if(0)
+  {
+    #plot PCA
+    pca_res = prcomp(t(normCounts.filt), center = T, scale. = T)
+    x = summary(pca_res)
+    varVal = x$importance[2,]
+    varVal = round(varVal, 3) * 100
+    scores = as.data.frame(pca_res$x)
+    valVec = c('conditions', 'tissue', 'strain', 'age', 'cell_line', 'sex')
+    selVal = c()
+    for (val in valVec)
+    {
+      #val = 'tissue'
+      #val = 'strain'
+      #val = 'genotype'
+      if(is.na(sample.info.sub[[val]]) == T)
+      {
+        next 
+      }
+      if( length(unique( sample.info.sub[[val]] )) == 1 )
+      {
+        next
+      }
+      selVal = append(selVal, val)
+    }
+    for(val in selVal)
+    {
+      #val = 'genotype'
+      #val = 'conditions'
+      ggplot(scores, aes(x=PC1, y=PC2)) + geom_point(aes(colour = as.factor( sample.info.sub[[val]] )  ), size=2) + labs(title="PCA",x=paste('PC1',' ', varVal[[1]], '%', sep=''), y=paste('PC2',' ', varVal[[2]], '%', sep='')) + scale_color_discrete(name=val)
+      
+      fileName = paste('PCA_norm_contrast_',i,'_', val , '.png', sep='')
+      ggsave(fileName, width = 9, height = 7, dpi = 200)
+    }
+  }
+  
+  dds.good = dds.filt
+  ddscounts.good = countTable.filt
+  rld2 <- rlogTransformation(dds.good, blind = TRUE)
+
+  cat("  \n")
+  cat("  \n### PCA on filtered genes - Contrast ",i,': ', contNames,"\n")
+  cat("  \n")
+  print(plotPCAWithSampleName_matrix2(assay(rld2), myGrp=colData(rld2)$conditions, myGrp2=colData(rld2)$conditions, 
+                              pcs=c(1,2), ntop=nrow(rld2), mcex = 0.8, title = "PCA 12"))
+
+  print(plotPCAWithSampleName_matrix2(assay(rld2), myGrp=colData(rld2)$conditions, myGrp2=colData(rld2)$conditions, 
+                              pcs=c(2,3), ntop=nrow(rld2), mcex = 0.8, title = "PCA 23"))
+  cat("  \n")
+  cat("  \n### MDS - Contrast ",i, ': ', contNames,"\n")
+  cat("  \n")
+  print(plotMDSWithSampleName_matrix2(assay(rld2), myGrp=colData(rld2)$conditions, myGrp2=colData(rld2)$conditions, 
+                              ntop=nrow(rld2),mcex = 1.1, title = "MDS"))
+  cat("  \n")
+  cat("  \n### CorrHeatmap - Contrast ",i,': ',contNames,"\n")
+  cat("  \n")
+  print(plotCorrHeat(rld2, intgroup="conditions", title="Corrheat", cw=14, ch=14))
+  
+    
+  coln <- NULL
+  coln$padj <- c(grep('padj$', colnames(filtGeneDf)))
+  coln$baseMean <- c(grep('baseMean$', colnames(filtGeneDf)))
+  coln$l2fc <- c(grep('FoldChange$', colnames(filtGeneDf)))
+
+  #cat("  \n")
+  #cat("  \n### Normalized Counts\n")
+  #cat("  \n")
+  
+  # atxn1 genes on normalized counts
+  fileName = paste('./DESeq2/', studyName, '_contrast_', i, '_DESeq_filt_genes.txt', sep='' )
+  norm.dt <- read.delim(fileName, stringsAsFactors = F) #<------------edit
+  norm.counts <- norm.dt[,grep("GSM",colnames(norm.dt))]
+  norm.counts$gene <- norm.dt$Gene_ID
+  norm.counts[is.na(norm.counts)] <- 0
+  
+
+  # Setup dataframe for plotting
+  selGeneName = 'ATXN1'
+  selGeneEnsID = 'ENSMUSG00000046876'
+  rowNum = grep(selGeneEnsID, norm.counts$gene)
+  #selGeneDf = norm.counts[norm.counts$gene %in% c(selGeneEnsID), ]#change to grep
+  selGeneDf = norm.counts[rowNum,]
+  #Mecp2$sample <- row.names(Mecp2)
+  dt.plot <- melt(selGeneDf)
+  dt.plot$sampleName <- dt.plot$variable
+  #dt.plot$QC.ID<-gsub("normcounts_","",dt.plot$variable)
+  dt2 <- merge(dt.plot, sample.info, by="sampleName")
+  
+  # Plot normalized Counts
+  gg_boxPlot_1 <- ggplot(data = dt2, aes(x=gene, y=value, fill=genotype)) +
+    geom_boxplot(alpha=0.3) +
+    geom_point(size = rel(2), position = position_jitterdodge()) +
+    theme_classic(base_size = 12) +
+    theme_bw(base_size = 14) +
+    theme(axis.text.x = element_text(size=10)) +
+    ylab("counts") +
+    ggtitle("ATXN1 normalized counts") +
+    facet_wrap( ~ genotype)
+  #print(gg_boxPlot)
+  
+  #Show CIC gene
+  fileName = paste('./DESeq2/', studyName, '_contrast_', i, '_DESeq_filt_genes.txt', sep='' )
+  #norm.dt <- read.delim("/mnt/hdd/atrostle/Mecp2pedia/pipeline_GSE66211/DESeq2/GSE66211_contrast_1_DESeq_filt_genes.txt", stringsAsFactors = F)
+  norm.dt <- read.delim(fileName, stringsAsFactors = F) #<------------edit
+  norm.counts <- norm.dt[,grep("GSM",colnames(norm.dt))]
+  norm.counts$gene <- norm.dt$Gene_ID
+  norm.counts[is.na(norm.counts)] <- 0
+  
+
+  # Setup dataframe for plotting
+  #Mecp2 <- norm.counts[norm.counts$gene %in% c("ENSMUSG00000031393"), ]  #<------------edit
+  selGeneName = 'CIC'
+  selGeneEnsID = 'ENSMUSG00000005442'
+  rowNum = grep(selGeneEnsID, norm.counts$gene)
+  #selGeneDf = norm.counts[norm.counts$gene %in% c(selGeneEnsID), ]#change to grep
+  selGeneDf = norm.counts[rowNum,]
+  #Mecp2$sample <- row.names(Mecp2)
+  dt.plot <- melt(selGeneDf)
+  dt.plot$sampleName <- dt.plot$variable
+  #dt.plot$QC.ID<-gsub("normcounts_","",dt.plot$variable)
+  dt2 <- merge(dt.plot, sample.info, by="sampleName")
+  
+  # Plot normalized Counts
+  gg_boxPlot_2 <- ggplot(data = dt2, aes(x=gene, y=value, fill=genotype)) +
+    geom_boxplot(alpha=0.3) +
+    geom_point(size = rel(2), position = position_jitterdodge()) +
+    theme_classic(base_size = 12) +
+    theme_bw(base_size = 14) +
+    theme(axis.text.x = element_text(size=10)) +
+    ylab("counts") +
+    ggtitle("CIC normalized counts") +
+    facet_wrap( ~ genotype)
+  #print(gg_boxPlot)
+  
+  cat("  \n")
+  cat("  \n")
+  cat("  \n")
+  cat("  \n### Genes of interest - Contrast ", i, " \n")
+  print(gg_boxPlot_1)
+  #plot.new()
+  #dev.off()
+  print(gg_boxPlot_2)
+  #plot.new()
+  #dev.off()
+  cat("  \n")
+  cat("  \n")
+  cat("  \n")
+  
+  
+  
+  cat("  \n")
+  cat("  \n### MA Plot comparison \n")
+  cat("  \n* FDR is adjusted p-value \n")
+  cat("  \n* Heatmap showing top 25 up and down regulated genes \n")
+  cat("  \n")
+  
+  DEGname = paste('DEG_', i,sep='')
+  MA_HM_plotv1(1,filtGeneDf,DEGname,lapply(coln, `[`,1),sample.info.sub$conditions, i)
+  #display_image(1, i)
+  MA_HM_plotv1(2,filtGeneDf,DEGname,lapply(coln, `[`,1),sample.info.sub$conditions, i)
+  #display_image(2, i)
+  MA_HM_plotv1(3,filtGeneDf,DEGname,lapply(coln, `[`,1),sample.info.sub$conditions, i)
+  #display_image(3, i)
+  
+}
+
+```
+
+
+```{r Display MA plots and p heat maps , include=F, echo=FALSE, results='asis', warning=FALSE,eval=F}
+for(i in 1:nrow(cont.tbl))
+{
+  cat("  \n")
+  cat("  \n### MA Plot comparison \n")
+  cat("  \n* FDR is adjusted p-value \n")
+  cat("  \n* Heatmap showing top 25 up and down regulated genes \n")
+  cat("  \n")
+
+  display_image(1, i)
+  display_image(2, i)
+  display_image(3, i)
+}
+
+```
+
+
+```{r make_TPM,include=T, echo=FALSE, results='asis', warning=FALSE,eval=T}
+#follow https://www.rna-seqblog.com/rpkm-fpkm-and-tpm-clearly-explained/
+#mergedCount$rpk = as.numeric( mergedCount$val/mergedCount$length )
+#scaleFactor = sum(mergedCount$rpk, na.rm = T) / 10^6
+#scaleFactor
+#mergedCount$tpm = mergedCount$rpk / scaleFactor
+#v = sum(mergedCount$tpm, na.rm = T)
+#cat('sum of tpm:', sum(mergedCount$tpm, na.rm = T), '\n') 
+
+#read the file which has the genes length
+  #check strain
+fileName = '../../../data/GRCm38p6_ens_genes_with_length.txt'
+geneLenDf = read.table(fileName,  header=T, sep='\t',stringsAsFactors = F, check.names=F)
+#head(geneLenDf)
+#divide the gene length by 1k to make it by kiolbases
+geneLenDf$gene_length = geneLenDf$gene_length/1000
+#go thru the files
+for(i in 1:nrow(sample.info) )
+{
+  #i = 1
+  fileName =  as.character( sample.info[i,]$fileName)
+  sampleName = as.character( sample.info[i,]$Sample_Name  )
+  s = unlist(strsplit(fileName, '/'))
+  fileLoc = paste(s[1:length(s)-1], collapse = '/') 
+  #fileName = 'GSE103471_res/SRR6004713/STAR/SRR6004713_STAR_ReadCounts_v2.txt'
+  countDf = read.table(fileName,  header=F, sep='\t',stringsAsFactors = F, check.names=F)
+  #head(countDf)
+  colnames(countDf) = c('Gene_ID', 'count')
+  #merge
+  mergedDf = merge(countDf, geneLenDf, by.x = 'Gene_ID', by.y = 'Gene_ID', all=T)
+  #head(mergedDf)
+  mergedDf$rpk = mergedDf$count/mergedDf$gene_length
+  scaleFactor = sum(mergedDf$rpk, na.rm = T) / 10^6
+  mergedDf$TPM = mergedDf$rpk/scaleFactor
+  #v = sum(mergedDf$TPM, na.rm = T)
+  #head(mergedDf)
+  mergedDf$Gene_ID_without_ver = NULL
+  mergedDf$external_gene_name = NULL
+  mergedDf$rpk = NULL
+  fileName = paste(fileLoc, '/' ,sampleName, '_TPM.txt', sep='')
+  write.table(mergedDf, file=fileName, sep='\t', row.names = F, quote = F)
+}
+```
+
+
+```{r save data, echo=FALSE, include=FALSE, eval=F}
+# save workspace
+save.image()
+
+```
+
+
+# Software tools used
+1.  FastQC v0.11.7
+2.  STAR v2.6.0a
+3.  RSeQC v2.7
+4.  samtools v0.1.19
+5.  DESeq2 v1.24.0
+
+
