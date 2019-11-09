@@ -1,0 +1,215 @@
+---
+title: "get genes TSS and length"
+output: 
+  html_document:
+    toc: true # table of content
+    toc_float:
+      collapsed: true
+    toc_depth: 4  # upto four depths of headings 
+    theme: united  
+    #highlight: tango  # specifies the syntax highlighting style
+    fig_width: 11
+    fig_height: 7
+---
+
+```{r load_lib}
+#to run
+#R -e "rmarkdown::render('get_gene_length.Rmd',output_file='gene_length_mouse38.html')"
+#R -e "rmarkdown::render('get_gene_length.Rmd',output_file='gene_length_human38.html')"
+library(biomaRt)
+```
+
+```{r get_gene_length_from_GENCODE}
+selOrganism = 'mouse_38'
+#selOrganism = 'human_38'
+#select a study to get the gene IDs from resulting count file, this depends on genome used
+if(selOrganism == 'mouse_38')
+{
+  studyName = 'GSE103471'
+  sampleId =  'SRR6004714'
+  fileName = '/mnt/hdd/rami/NGS_data/gencode.GRCm38p6_vM18.primary_assembly.annotation.gtf'
+  fileName
+  gencodeDf = read.table(fileName,  header=F, sep='\t',stringsAsFactors = F, check.names=F)
+  dim(gencodeDf)
+  head(gencodeDf)
+  #filter to gene only
+  gencodeDf = gencodeDf[gencodeDf$V3 == 'gene',]
+  dim(gencodeDf)
+  #make a column for gene IDs
+  geneIdVec =c()
+  for(rowNum in 1:nrow(gencodeDf))
+  {
+    #rowNum = 1
+    tmpVal = gencodeDf[rowNum,]$V9
+    s = unlist(strsplit(tmpVal, ';'))
+    s = s[1]
+    s = gsub('gene_id', '', s)
+    s = trimws(s)
+    geneIdVec = append(geneIdVec, s)
+  }
+  gencodeDf$Gene_ID = geneIdVec
+  
+}else if(selOrganism == 'human_38')
+{
+  studyName = 'GSE78519'
+  sampleId = 'SRR3189317'
+  fileName = '/mnt/hdd/rami/NGS_data/gencode.GRCh38p12_v28.primary_assembly.annotation.gtf'
+  fileName
+  gencodeDf = read.table(fileName,  header=F, sep='\t',stringsAsFactors = F, check.names=F)
+  #filter to gene only
+  gencodeDf = gencodeDf[gencodeDf$V3 == 'gene',]
+  dim(gencodeDf)
+  #make a column for gene IDs
+  geneIdVec =c()
+  for(rowNum in 1:nrow(gencodeDf))
+  {
+    #rowNum = 1
+    tmpVal = gencodeDf[rowNum,]$V9
+    s = unlist(strsplit(tmpVal, ';'))
+    s = s[1]
+    s = gsub('gene_id', '', s)
+    s = trimws(s)
+    geneIdVec = append(geneIdVec, s)
+  }
+  gencodeDf$Gene_ID = geneIdVec
+}
+
+#get mart if needed, can add this to up
+if(selOrganism == 'mouse_38')
+{
+  mart = useMart("ensembl", dataset="mmusculus_gene_ensembl")#GRCm38
+}else if(selOrganism == 'human_38')
+{
+  mart = useMart("ensembl", dataset="hsapiens_gene_ensembl")#GRCh38
+}
+#get gene IDs from count file used
+fileName = paste(studyName, '_res/',sampleId,'/STAR/',sampleId,'_STAR_ReadCounts_v2.txt', sep='')
+fileName
+countDf = read.table(fileName,  header=F, sep='\t',stringsAsFactors = F, check.names=F)
+head(countDf)
+colnames(countDf) = c('Gene_ID', 'count')
+#remove the PAR Y part if human
+dim(countDf)
+if(selOrganism == 'human_38')
+{
+  countDf = countDf[!grepl('_PAR_Y', countDf$Gene_ID), ]#there are 45 wiht _PAR_Y
+  dim(countDf)
+}
+countDf$Gene_ID_without_ver = gsub("\\..*","",countDf$Gene_ID)
+
+#merge  and get gene length from GENCODE
+tmpDf = merge(countDf, gencodeDf, by='Gene_ID', all.x=T)
+dim(tmpDf)
+tmpDf$gene_length = tmpDf$V5 - tmpDf$V4
+
+
+start.time <- Sys.time()
+gene_coords= getBM(attributes=c("ensembl_gene_id", "external_gene_name", "chromosome_name", "start_position","end_position"), 
+                   filters="ensembl_gene_id", 
+                   values=tmpDf$Gene_ID_without_ver, 
+                   mart=mart)
+end.time <- Sys.time()
+time.taken <- end.time - start.time
+dim(gene_coords)
+
+#merge2 for gene symbols
+tmpDf = merge(tmpDf, gene_coords, by.x = 'Gene_ID_without_ver', by.y= 'ensembl_gene_id' ,all.x = T)
+dim(tmpDf)
+
+#Gene_ID_without_ver	Gene_ID	chromosome_name	start_position	end_position	gene_length	gene_name
+finalDf = data.frame('Gene_ID_without_ver' = tmpDf$Gene_ID_without_ver, 'Gene_ID' = tmpDf$Gene_ID,
+                     'chromosome_name' = tmpDf$chromosome_name, 'start_position' = tmpDf$V4,
+                     'end_position' = tmpDf$V5,
+                    'gene_length' = tmpDf$gene_length, 'gene_name' = tmpDf$external_gene_name) 
+head(finalDf)
+dim(finalDf)
+
+
+if(selOrganism == 'mouse_38')
+{
+  fileName = 'GRCm38p6_vM18_GENCODE_genes_with_length_and_symbols.txt'  
+}else
+{
+  fileName = 'GRCh38p12_v28_GENCODE_genes_with_length_and_symbols.txt'
+}
+fileName
+write.table(finalDf, file=fileName, sep='\t', row.names = F, quote = F)
+```
+
+
+```{r get_gene_length_tss_using_biomart, eval=T}
+#selOrganism = 'mouse_38'
+selOrganism = 'human_38'
+#select a study to get the gene IDs from resulting count file, this depends on genome used
+if(selOrganism == 'mouse_38')
+{
+  studyName = 'GSE103471'
+  sampleId =  'SRR6004713'
+}else if(selOrganism == 'human_38')
+{
+  studyName = 'GSE78519'
+  sampleId = 'SRR3189317'
+}
+
+fileName = paste(studyName, '_res/',sampleId,'/STAR/',sampleId,'_STAR_ReadCounts_v2.txt', sep='')
+fileName
+countDf = read.table(fileName,  header=F, sep='\t',stringsAsFactors = F, check.names=F)
+head(countDf)
+colnames(countDf) = c('Gene_ID', 'count')
+#remove the PAR Y part if human
+dim(countDf)
+if(selOrganism == 'human_38')
+{
+  countDf = countDf[!grepl('_PAR_Y', countDf$Gene_ID), ]#there are 45 wiht _PAR_Y
+  dim(countDf)
+}
+countDf$Gene_ID_without_ver = gsub("\\..*","",countDf$Gene_ID)
+
+#get mart 
+if(selOrganism == 'mouse_38')
+{
+  mart = useMart("ensembl", dataset="mmusculus_gene_ensembl")#GRCm38
+}else if(selOrganism == 'human_38')
+{
+  mart = useMart("ensembl", dataset="hsapiens_gene_ensembl")#GRCh38
+}
+
+#countDf = countDf[1:100,]#just testing
+start.time <- Sys.time()
+dim(countDf)
+gene_coords= getBM(attributes=c("ensembl_gene_id", "external_gene_name", "chromosome_name", "start_position","end_position"), 
+                   filters="ensembl_gene_id", 
+                   values=countDf$Gene_ID_without_ver, 
+                   mart=mart)
+end.time <- Sys.time()
+time.taken <- end.time - start.time
+dim(gene_coords)
+head(gene_coords)
+
+
+#tmpv = c('ENSG00000223972')
+#gene_coords= getBM(attributes=c("ensembl_gene_id", "external_gene_name", "chromosome_name", "start_position","end_position"), 
+#                   filters="ensembl_gene_id", 
+#                   values=tmpv, 
+#                   mart=mart)
+
+#gene_coords
+
+
+tmpDf = merge(countDf, gene_coords, by.x='Gene_ID_without_ver', by.y='ensembl_gene_id', all=T)
+tmpDf$gene_length = tmpDf$end_position - tmpDf$start_position
+tmpDf$gene_name = tmpDf$external_gene_name
+tmpDf$external_gene_name = NULL
+tmpDf$count = NULL
+dim(tmpDf)
+head(tmpDf)
+if(selOrganism == 'mouse_38')
+{
+  fileName = 'GRCm38_ens_genes_with_length.txt'  
+}else
+{
+  fileName = 'GRCh38_ens_genes_with_length.txt'
+}
+fileName
+write.table(tmpDf, file=fileName, sep='\t', row.names = F, quote = F)
+```
