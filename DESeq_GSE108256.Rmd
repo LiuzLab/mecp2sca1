@@ -46,7 +46,8 @@ disease = 'NA'
 rowMeanCut = 10
 
 #read the gene symbols
-fileName = '/mnt/hdd/rami/NGS_data/GRCm38p6_genes_tss_v2.txt'
+#fileName = '/mnt/hdd/rami/NGS_data/GRCm38p6_genes_tss_v2.txt'
+fileName = '/mnt/hdd/rami/NGS_data/GRCm38p6_vM18_GENCODE_genes_with_length_and_symbols.txt'
 geneSymDf = read.table(fileName,  header=T, sep='\t',stringsAsFactors = F, check.names=F)
 colnames(geneSymDf)[grep("gene_name",colnames(geneSymDf))] <- "gene_symbol"
 geneSymDf <- geneSymDf[,c(1,5)]
